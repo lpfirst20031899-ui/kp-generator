@@ -39,6 +39,14 @@
   .btn-ghost{background:#fff;color:var(--ink);border:1px solid var(--line)}.btn-ghost:hover{border-color:var(--muted)}
   .btn:disabled{opacity:.45;cursor:not-allowed}
   .hint{font-size:11.5px;color:var(--muted);margin-top:5px}
+  /* Галочки-опції. Звичайний чекбокс із дрібним підписом менеджер просто не бачив (саме так
+     знята автоматика доїжджала в КП), тому кожна опція — картка на всю ширину, і ввімкнена
+     зеленіє так само, як решта «активного» в сервісі. */
+  .opt{display:flex;align-items:center;gap:10px;margin:8px 0 0;padding:11px 12px;border:1px solid var(--line);
+       border-radius:10px;background:#fff;font-size:13.5px;font-weight:600;color:var(--ink);cursor:pointer;transition:.15s}
+  .opt:hover{border-color:var(--muted)}
+  .opt input{width:18px;height:18px;flex:none;margin:0;accent-color:var(--green);cursor:pointer}
+  .opt:has(input:checked){border-color:var(--green);background:#f1fbf4;color:var(--green-d)}
   .pill{display:inline-block;background:#eafaef;color:var(--green-d);border-radius:20px;padding:2px 9px;font-size:12px;font-weight:600}
   .warn-box{background:#fff7ec;border:1px solid #f0d8a8;color:#8a5a12;border-radius:10px;padding:10px 12px;font-size:12.5px;margin-top:12px}
   .warn-box b{color:var(--danger)}
@@ -193,7 +201,8 @@
       <div id="modeManual" style="display:none">
         <div class="row">
           <div><label>Інвертор</label><select id="inverter"></select></div>
-          <div><label>Кількість інверторів</label><input id="invCount" type="number" min="1" value="1"></div>
+          <div><label>Кількість інверторів</label>
+            <input id="invCount" type="number" min="0" value="1" placeholder="0 — без інвертора"></div>
         </div>
       </div>
       <!-- Модель АКБ стоїть поза режимами: у наявності лежать різні моделі однакової ємності
@@ -201,7 +210,7 @@
       <label>АКБ — модель</label>
       <select id="battModel"></select>
       <div id="battCountField"><label>Кількість АКБ</label>
-        <input id="battCount" type="number" min="1" value="1"></div>
+        <input id="battCount" type="number" min="0" value="1" placeholder="0 — без АКБ"></div>
 
       <div id="upsPanelsBox">
         <label style="margin-top:12px">Панелі</label>
@@ -210,6 +219,7 @@
           <button id="pYes" onclick="setUpsPanels(true)">З панелями</button>
         </div>
       </div>
+
       <!-- Панелі обираються так само, як АКБ: у наявності не одна модель, а кількість менеджер
            ставить руками, коли клієнт докуповує панелі окремо від станції. -->
       <div id="panelPick">
@@ -222,8 +232,10 @@
             <input id="panelKw" type="number" step="0.1" value="8"></div>
         </div>
       </div>
-      <label style="display:flex;gap:8px;align-items:center;margin-top:12px;font-weight:400;cursor:pointer">
-        <input id="withProt" type="checkbox" checked style="width:auto;margin:0"> Включити захисну автоматику</label>
+      <label class="opt"><input id="withProt" type="checkbox" checked> Захисна автоматика</label>
+      <!-- Монтаж ДБЖ ставиться й окремо від станції (рішення власника 30.10.2026): у повній СЕС
+           він є завжди, тому галочка показується тільки в ДБЖ. -->
+      <label class="opt" id="mountOptBox"><input id="withMount" type="checkbox" onchange="syncForm()"> Монтажні роботи</label>
     </div>
 
     <!-- Монтаж не питаємо: повна СЕС без монтажу не буває (це вже ДБЖ), а ДБЖ рахується без нього.
@@ -246,6 +258,8 @@
       <div id="consField"><label>Споживання клієнта, кВт/міс</label>
         <input id="consumption" type="number" value="500"></div>
       <div class="hint" id="consHint"></div>
+      <label class="opt"><input id="withUbd" type="checkbox"> Знижка УБД 3%</label>
+      <div class="hint">У КП покажемо і повну суму, і суму зі знижкою.</div>
     </div>
 
     <details class="adv">
@@ -299,7 +313,7 @@ const COMPANY = {
   site:    "greenbuilding.com.ua",
 };
 let CFG=null, PREVIEW=null, DEAL=null, MODE="station", MOUNT_OVERRIDE=null, CUR_NUMBER=0;
-let FORMAT="ses", UPS_PANELS=false;   // формат КП і панелі в ДБЖ; монтаж випливає з формату
+let FORMAT="ses", UPS_PANELS=false;   // формат КП і панелі в ДБЖ; монтаж — галочкою в ДБЖ
 
 const money = n => (Math.round(n*100)/100).toLocaleString("uk-UA",{minimumFractionDigits:2,maximumFractionDigits:2})+" ₴";
 const int   = n => Math.round(n).toLocaleString("uk-UA");
@@ -381,9 +395,10 @@ function formFlags(){
   const ups = FORMAT === "ups";
   const hasPanels = !ups || UPS_PANELS;       // ДБЖ без панелей — єдиний випадок без них
   const manual = ups || MODE === "manual";    // готових ДБЖ у списку станцій немає
-  // Монтаж випливає з формату, а не питається: повна СЕС без монтажу — це вже ДБЖ,
-  // а ДБЖ з монтажем — це вже повна станція. Питання пропонувало неможливі варіанти.
-  return {ups, hasPanels, manual, mount: !ups,
+  // Повна СЕС без монтажу не буває (це вже ДБЖ), а ДБЖ продається і з монтажем, і без —
+  // тому питаємо галочкою тільки в ДБЖ.
+  const mount = !ups || document.getElementById("withMount").checked;
+  return {ups, hasPanels, manual, mount,
           // Споживання рахує економію на е/е — без панелей її немає, поле нічого не змінює.
           needCons: hasPanels};
 }
@@ -402,6 +417,7 @@ function syncForm(){
   sh("upsPanelsBox", f.ups);
   document.getElementById("pNo").classList.toggle("on", !UPS_PANELS);
   document.getElementById("pYes").classList.toggle("on", UPS_PANELS);
+  sh("mountOptBox", f.ups);
   sh("panelPick", f.hasPanels);
   sh("panelKwField", f.hasPanels && f.manual);
   sh("stepMount", f.mount);
@@ -411,10 +427,15 @@ function syncForm(){
     .forEach((e, i) => { const n = e.querySelector(".step-h .n"); if (n) n.textContent = i + 1; });
   document.getElementById("consHint").textContent = f.needCons ? ""
     : "Без панелей економія на е/е не рахується — споживання не потрібне.";
-  // ДБЖ без неї не продається, а знята на попередньому КП галочка лишалась знятою.
-  if(f.ups) document.getElementById("withProt").checked = true;
 }
-function setFormat(v){ FORMAT=v; syncForm(); }
+/* Дефолти ДБЖ ставляться на зміні формату, а не в syncForm(): інакше знята менеджером
+   галочка автоматики (чи поставлена галочка монтажу) поверталась на будь-якій дії у формі. */
+function setFormat(v){
+  FORMAT=v;
+  if(v==="ups"){ document.getElementById("withProt").checked = true;      // ДБЖ без неї не продається
+                 document.getElementById("withMount").checked = false; }  // монтаж ДБЖ — за запитом
+  syncForm();
+}
 function setUpsPanels(v){ UPS_PANELS=v; syncForm(); }
 function setMode(m){
   MODE=m;
@@ -451,7 +472,8 @@ function buildReq(){
   else{
     const o=JSON.parse(document.getElementById("inverter").value||"{}");
     req.inverter_kw=o.kw; req.inverter_phase=o.phase;
-    req.inverter_count=+document.getElementById("invCount").value||1;
+    // Нуль або порожнє поле = позиції в КП немає (инвертор, АКБ і панелі вимикаються окремо).
+    req.inverter_count=+document.getElementById("invCount").value||0;
     req.panel_kw=+document.getElementById("panelKw").value;
     req.battery_count=+document.getElementById("battCount").value;
   }
@@ -463,6 +485,7 @@ function buildReq(){
   req.no_mounting=!f.mount;
   req.no_panels=!f.hasPanels;
   req.no_protection=!document.getElementById("withProt").checked;
+  req.ubd=document.getElementById("withUbd").checked;
   return req;
 }
 async function generate(){
@@ -627,17 +650,21 @@ async function renderKP(req,d){
      <div class="kp-party"><b>Менеджер:</b> ${req.manager||"—"}${req.manager_phone?", "+req.manager_phone:""}</div>`,
     `<div class="kp-center">Технічне рішення</div>
      <div class="tech">
-       <div><div class="l">${noPan?"Потужність ДБЖ":"Потужність СЕС"}</div><div class="v">${t.ses_kw} кВт</div></div>
+       ${t.ses_kw?`<div><div class="l">${noPan?"Потужність ДБЖ":"Потужність СЕС"}</div><div class="v">${t.ses_kw} кВт</div></div>`:""}
        ${noPan?"":`<div><div class="l">Сонячні панелі</div><div class="v">${t.panels_kw} кВт</div></div>`}
-       <div><div class="l">Інвертор</div><div class="v">${t.inverter_count>1?t.inverter_count+" × "+t.inverter_kw:t.inverter_kw} кВт</div></div>
-       <div><div class="l">Акумуляторні батареї</div><div class="v">${t.battery_kwh} кВт</div></div>
+       ${t.inverter_count?`<div><div class="l">Інвертор</div><div class="v">${t.inverter_count>1?t.inverter_count+" × "+t.inverter_kw:t.inverter_kw} кВт</div></div>`:""}
+       ${t.battery_kwh?`<div><div class="l">Акумуляторні батареї</div><div class="v">${t.battery_kwh} кВт</div></div>`:""}
      </div>`,
     `<table class="eq">
        <thead><tr><th>Назва</th><th>Од. виміру</th><th>Кількість</th><th>Ціна</th><th>Сума</th></tr></thead>
        <tbody>${rows}</tbody>
      </table>
-     <div class="kp-topay">До сплати: ${money(d.total)}</div>
-     <div class="kp-words">(${wordsUAH(d.total)})</div>`,
+     ${d.discount ? `<div class="kp-topay">Загальна сума: ${money(d.total)}</div>
+     <div class="kp-topay">Знижка УБД ${d.discount_pct}%: −${money(d.discount)}</div>
+     <div class="kp-topay">До сплати: ${money(d.total_pay)}</div>
+     <div class="kp-words">(${wordsUAH(d.total_pay)})</div>`
+     : `<div class="kp-topay">До сплати: ${money(d.total)}</div>
+     <div class="kp-words">(${wordsUAH(d.total)})</div>`}`,
     chart,
     noPan ? "" : `<table class="vig1">
        <tr><td>Генерація станції в місяць</td><td class="v v-green">${int(e.generation)} кВт</td></tr>
@@ -759,7 +786,9 @@ function kpMetaB64(){
     manager:{ name:req.manager||"", phone:req.manager_phone||"" },
     tech:{ ses_kw:t.ses_kw, panels_kw:t.panels_kw, inverter_kw:t.inverter_kw, battery_kwh:t.battery_kwh },
     lines:(d.lines||[]).map(l=>({ title:l.title, unit:l.unit, qty:l.qty, price:l.price, sum:l.sum })),
-    total:d.total };
+    // total лишається сумою позицій — на нього зав'язаний extractPdfText() генератора рахунків;
+    // знижка їде окремими полями, щоб рахунок міг порахувати і її.
+    total:d.total, discount:d.discount||0, total_pay:d.total_pay ?? d.total };
   const bytes=new TextEncoder().encode(JSON.stringify(payload));
   let s=""; bytes.forEach(b=>{ s+=String.fromCharCode(b); });
   return btoa(s);

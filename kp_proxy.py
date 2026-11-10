@@ -89,7 +89,7 @@ API_TOKEN  = _read_token()
 # API KeepinCRM не віддає ні курс, ні ціни в гривні, тому це єдине місце, де курс задається:
 # змінили ціну цього товару в CRM → генератор рахує по-новому (без правки коду й редеплою).
 USD_RATE_SKU      = "SERVICE-USD-RATE"
-USD_RATE_FALLBACK = float(os.environ.get("USD_RATE", 45.25))   # якщо товар недоступний
+USD_RATE_FALLBACK = float(os.environ.get("USD_RATE", 46.0))   # якщо товар недоступний
 EUR_RATE   = None          # евро-оборудование не поддерживаем (в наличии нет)
 PORT       = int(os.environ.get("PORT", 8790))   # локально 8790; у хмарі порт задає хостинг
 # HERE — папка с kp_generator.html и assets/. В упакованном .exe/.app (PyInstaller)
@@ -126,6 +126,8 @@ KP_COUNTER_FILE  = os.path.join("/tmp", "kp_number.txt")   # локальний 
 # Отдел продаж: имя в CRM → резервный номер линии, который видит клиент.
 # Список сверен с `GET /users` (13.10.2026): все, кроме владельца (id 26), админов
 # (Андрій Білий id 1, Green Partners id 4, Асистент id 22) и Олександра Вигулярного (id 24).
+# Сняты 10.11.2026 по решению владельца: Людмила Волкова (id 30), Денис Тишевич (id 31) — КП
+# от их имени больше не формируется.
 # Номера здесь — только резерв: в КП печатается живой номер из телефонии (`phones()`), иначе
 # переезд линии между сотрудниками молча отправил бы клиента к другому человеку.
 # Замер и проверка источника — `Джерела даних та ціни.md`, п. 7.
@@ -137,9 +139,8 @@ MANAGERS = [
     # Квалификаторы, работают с 05.10.2026 (см. Отдел продаж/CLAUDE.md)
     {"name": "Анастасія Москва",    "phone": "+380731771002"},   # CRM id 28
     {"name": "Антон Гангалюк",      "phone": "+380732477001"},   # CRM id 29
-    {"name": "Людмила Волкова",     "phone": "+380631771004"},   # CRM id 30
-    {"name": "Денис Тишевич",       "phone": "+380737070041"},   # CRM id 31
     {"name": "Дмитро Хубецов",      "phone": "+380631771015"},   # CRM id 32, перші дзвінки 16.10.2026
+    {"name": "Нікіта Хабенко",      "phone": "+380631771012"},   # додано 05.11.2026, 63 дзвінки в CDR
 ]
 PHONES_TTL = 600            # кеш номеров из телефонии, с
 _phones_cache = {"t": 0, "v": None, "src": "fallback"}
@@ -181,6 +182,9 @@ UKRSIB_TERMS        = [(9, 9), (12, 12), (15, 12), (24, 12)]  # (термін_м
 
 # Захисна автоматика — позиция «до 15 кВт» = 281$ (согласовано)
 PROTECTION_USD = 281.0
+# Знижка УБД (учасник бойових дій) — 3% на весь кошторис, рішення власника 30.10.2026.
+# Ціни позицій знижка не чіпає: їх же переносять у CRM, і там рядок має збігатися з каталогом.
+UBD_DISCOUNT = 0.03
 # ID товаров в каталоге CRM для привязки позиций к блоку «Товари» сделки
 PROTECTION_ID = 8201228   # Захисна автоматика 281$
 VYTRATNI_ID   = 8201225   # Витратні матеріали (кабель, гофра, короб, стяжки, кріпильні)
@@ -294,8 +298,8 @@ def _map_phones(items):
 
 def phones():
     """Номера линий из телефонии CRM; кеш PHONES_TTL, при сбое — номера из MANAGERS.
-    Одной страницы хватает: замер 13.10.2026 — в 100 последних звонках есть все 8 человек,
-    которые реально звонят (у Хубецова звонков нет вовсе, он и остаётся без номера)."""
+    Одной страницы хватает: замер 05.11.2026 — в 100 последних звонках все люди списка,
+    у кого звонков нет, номер берётся из MANAGERS."""
     if _phones_cache["v"] and time.time() - _phones_cache["t"] < PHONES_TTL:
         return _phones_cache["v"]
     try:
@@ -729,16 +733,19 @@ def build_preview(req):
         inv_kw    = _num(req.get("inverter_kw"))
         inv_phase = req.get("inverter_phase") or "?"
         batt_kwh  = _num(req.get("battery_kwh")) or DEFAULT_BATTERY_KWH
-        batt_count = int(req.get("battery_count") or 1)
-        panel_target = _num(req.get("panel_kw")) or inv_kw
-        inv_count = max(1, int(req.get("inverter_count") or 1))
+        # Нуль чи порожнє поле кількості = обладнання в КП не їде (рішення власника 05.11.2026):
+        # ДБЖ продають і самим інвертором, і самими АКБ, і докупкою панелей окремо.
+        # Раніше `or 1` мовчки повертало одиницю, і зайвий рядок їхав і в КП, і в CRM.
+        batt_count = max(0, int(req.get("battery_count") or 0))
+        inv_count  = max(0, int(req.get("inverter_count") or 0))
+        panel_target = _num(req.get("panel_kw")) or inv_kw or 0
 
     # 2) автоподбор в наличии
-    inv = pick_inverter(cat, inv_kw, inv_phase)
-    if not inv:
+    inv = pick_inverter(cat, inv_kw, inv_phase) if inv_count else None
+    if inv_count and not inv:
         warnings.append(f"Інвертор {inv_kw} кВт {inv_phase} — немає в наявності. Оберіть іншу конфігурацію.")
-    batt = choose_battery(cat, req.get("battery_id"), batt_kwh)
-    if not batt:
+    batt = choose_battery(cat, req.get("battery_id"), batt_kwh) if batt_count else None
+    if batt_count and not batt:
         warnings.append(f"АКБ ~{batt_kwh} кВт·год — немає в наявності.")
     if no_panels:
         panel, n_panels = None, 0
@@ -748,15 +755,22 @@ def build_preview(req):
         if not panel:
             warnings.append("Сонячні панелі — немає в наявності.")
 
-    if warnings and (not inv or not batt or (not no_panels and not panel)):
+    if warnings and ((inv_count and not inv) or (batt_count and not batt)
+                     or (not no_panels and not panel)):
         return {"warnings": warnings, "ok": False}
+    # КП без жодної позиції обладнання — це порожній кошторис із самим монтажем.
+    if not inv and not batt and not panel:
+        return {"ok": False, "warnings": ["Оберіть хоча б одну позицію обладнання: "
+                "кількість інверторів і АКБ стоїть у нулі, панелі вимкнені."]}
 
     # 3) мощности (Блок 1 «Технічне рішення»)
     panel_kw = round(n_panels * (panel["power"] or 0) / 1000.0, 2) if panel else 0.0
-    batt_total = round(batt_count * (batt["power"] or 0), 2)
+    batt_total = round(batt_count * (batt["power"] or 0), 2) if batt else 0.0
     # Потужність СЕС = сумарна по інверторах: кілька інверторів ставлять рідко, але ставлять.
-    tech = {"ses_kw": round((inv["power"] or 0) * inv_count, 2), "panels_kw": panel_kw,
-            "inverter_kw": inv["power"], "inverter_count": inv_count, "battery_kwh": batt_total}
+    tech = {"ses_kw": round((inv["power"] or 0) * inv_count, 2) if inv else 0.0,
+            "panels_kw": panel_kw,
+            "inverter_kw": inv["power"] if inv else 0, "inverter_count": inv_count,
+            "battery_kwh": batt_total}
 
     # 4) список оборудования (Блок 2) с ценами
     prot_uah = round(protection_usd(bool(panel)) * usd_rate(), 2)
@@ -766,12 +780,14 @@ def build_preview(req):
         mrows, mtot = mounting_rows(n_panels, batt_count, req.get("roof", "metal"),
                                     int(req.get("floors") or 1), _num(req.get("km")) or 0,
                                     req.get("mounting_override"), n_inv=inv_count)
-    equip = [
-        {"title": inv["title"],   "unit": "шт",       "qty": inv_count, "price": inv["uah"],   "product_id": inv["id"]},
+    equip = []
+    if inv:
+        equip.append({"title": inv["title"], "unit": "шт", "qty": inv_count,
+                      "price": inv["uah"], "product_id": inv["id"]})
+    if batt:
         # у КП — з маркою; прив'язка позиції до товару CRM іде окремим `product_title` (нижче)
-        {"title": with_vendor(batt["title"], batt.get("vendor")),
-         "unit": "шт", "qty": batt_count, "price": batt["uah"], "product_id": batt["id"]},
-    ]
+        equip.append({"title": with_vendor(batt["title"], batt.get("vendor")),
+                      "unit": "шт", "qty": batt_count, "price": batt["uah"], "product_id": batt["id"]})
     if panel:
         equip.append({"title": panel["title"], "unit": "шт", "qty": n_panels,
                       "price": panel["uah"], "product_id": panel["id"]})
@@ -784,6 +800,10 @@ def build_preview(req):
         p = prods_by_id.get(ln.get("product_id"))
         ln["product_title"] = p["title"] if p else ln["title"]
     total = round(sum(ln["sum"] for ln in lines), 2)
+    # Знижка УБД окремим рядком, а не правкою цін: клієнт має бачити обидві суми,
+    # а в CRM позиції їдуть за каталожною ціною. Кредит рахується від суми до сплати.
+    discount = round(total * UBD_DISCOUNT, 2) if req.get("ubd") else 0.0
+    total_pay = round(total - discount, 2)
 
     # 5) блок «Вигоди» + помесячная генерация (для графика)
     econ_month = (_num(req.get("consumption")) or 0) * PRICE_FORECAST
@@ -794,12 +814,13 @@ def build_preview(req):
     return {
         "ok": True, "warnings": warnings, "no_mounting": no_mounting, "no_panels": no_panels,
         "tech": tech, "lines": lines, "total": total, "economy": econ,
+        "discount": discount, "discount_pct": round(UBD_DISCOUNT * 100), "total_pay": total_pay,
         "monthly": monthly, "mounting": mrows, "mounting_totals": mtot,
         # У КП на ДБЖ кредитних таблиць немає зовсім: обидві рахують економію на е/е, якої
         # без панелей не буває, а держкомпенсація Ощадбанку дається лише на гібридну СЕС.
         "credit": {} if no_panels else {
-            "oschad": oschad_credit(total, econ_month),
-            "ukrsib": ukrsib_credit(total, econ_month)},
+            "oschad": oschad_credit(total_pay, econ_month),
+            "ukrsib": ukrsib_credit(total_pay, econ_month)},
         "meta": {"manager": req.get("manager"), "manager_phone": req.get("manager_phone"),
                  "client_name": req.get("client_name"), "client_phone": req.get("client_phone"),
                  "client_city": req.get("client_city"), "number": req.get("number"),
@@ -848,19 +869,19 @@ def _selftest_phones():
     внутрішня лінія 800… у КП не потрапляє, а людина без звонків лишається з резервним номером."""
     sample = [
         # старіший запис стоїть першим: порядок видачі CRM не гарантований, вибір — по даті
-        {"user": {"name": "Людмила Волкова"}, "did_number": "380731771002", "started_at": "2026-09-20T11:00:00Z"},
-        {"user": {"name": "Людмила Волкова"}, "did_number": "380631771004", "started_at": "2026-10-13T11:00:00Z"},
+        {"user": {"name": "Антон Гангалюк"}, "did_number": "380731771002", "started_at": "2026-09-20T11:00:00Z"},
+        {"user": {"name": "Антон Гангалюк"}, "did_number": "380631771004", "started_at": "2026-10-13T11:00:00Z"},
         {"user": {"name": "Анастасія Москва"}, "did_number": "80067124209", "started_at": "2026-10-13T12:00:00Z"},
         {"user": {"name": "Анастасія Москва"}, "did_number": "380731771002", "started_at": "2026-10-13T10:00:00Z"},
         {"user": None, "did_number": "380737070046", "started_at": "2026-10-13T12:30:00Z"},
     ]
     got = _map_phones(sample)
-    assert got["Людмила Волкова"] == "+380631771004", got
+    assert got["Антон Гангалюк"] == "+380631771004", got
     assert got["Анастасія Москва"] == "+380731771002", got
     assert len(got) == 2, got
     _phones_cache.update(t=time.time(), v=got, src="test")
     cfg = {m["name"]: m["phone"] for m in managers_cfg()}
-    assert cfg["Людмила Волкова"] == "+380631771004", cfg
+    assert cfg["Антон Гангалюк"] == "+380631771004", cfg
     assert cfg["Сергій Годун"] == "+380737070046", cfg          # немає у звонках → резерв з MANAGERS
     assert cfg["Дмитро Хубецов"] == "+380631771015", cfg
     _phones_cache.update(t=0, v=None, src="fallback")
@@ -1032,6 +1053,46 @@ def _selftest_protection():
     ups  = prot_line({**base, "no_panels": True})
     assert abs(ups * 2 - full) <= 0.02, (ups, full)   # копійка на окремому округленні кожного рядка
     print(f"protection_usd (повний {full:.2f} ₴ / половина {ups:.2f} ₴) — OK")
+
+def _selftest_zero_counts():
+    """Сторож нульової кількості: інвертор, АКБ і панелі вмикаються й вимикаються незалежно.
+    До 05.11.2026 `or 1` мовчки повертало одиницю — зайвий рядок їхав і в КП, і в CRM."""
+    base = {"mode": "manual", "inverter_kw": 8, "inverter_phase": "1ф", "no_mounting": True,
+            "no_panels": True, "consumption": 500}
+    titles = lambda r: [l["title"] for l in r["lines"]]
+
+    only_inv = build_preview({**base, "inverter_count": 1, "battery_count": 0})
+    assert only_inv["ok"], only_inv.get("warnings")
+    assert not any("Акумулятор" in t for t in titles(only_inv)), titles(only_inv)
+    assert only_inv["tech"]["battery_kwh"] == 0, only_inv["tech"]
+
+    only_batt = build_preview({**base, "inverter_count": 0, "battery_count": 2})
+    assert only_batt["ok"], only_batt.get("warnings")
+    assert not any("нвертор" in t for t in titles(only_batt)), titles(only_batt)
+    assert only_batt["tech"]["ses_kw"] == 0 and only_batt["tech"]["inverter_count"] == 0
+
+    only_pan = build_preview({**base, "no_panels": False, "panel_count": 10,
+                              "inverter_count": 0, "battery_count": 0})
+    assert only_pan["ok"], only_pan.get("warnings")
+    assert sum(1 for t in titles(only_pan) if "анел" in t) == 1, titles(only_pan)
+
+    empty = build_preview({**base, "inverter_count": 0, "battery_count": 0})
+    assert not empty["ok"] and "хоча б одну позицію" in empty["warnings"][0], empty
+    print("нульова кількість (інвертор / АКБ / панелі окремо) — OK")
+
+def _selftest_ubd():
+    """Сторож знижки УБД: ціни позицій лишаються повними, знижка доїжджає до суми й кредиту."""
+    base = {"mode": "station", "station": STATIONS[0]["name"], "consumption": 500}
+    plain = build_preview({**base, "km": 100})
+    ubd   = build_preview({**base, "km": 100, "ubd": True})
+    assert plain["discount"] == 0 and plain["total_pay"] == plain["total"], plain["discount"]
+    assert ubd["total"] == plain["total"], (ubd["total"], plain["total"])
+    assert abs(ubd["discount"] - plain["total"] * UBD_DISCOUNT) < 0.01, ubd["discount"]
+    assert ubd["total_pay"] == round(plain["total"] - ubd["discount"], 2), ubd["total_pay"]
+    # Знижка має дійти до кредитних таблиць, а не лишитись у підсумку КП.
+    assert ubd["credit"]["oschad"]["price"] == round(ubd["total_pay"]), ubd["credit"]["oschad"]["price"]
+    assert ubd["credit"]["ukrsib"]["price"] == round(ubd["total_pay"]), ubd["credit"]["ukrsib"]["price"]
+    print(f"знижка УБД ({ubd['discount_pct']}%: {plain['total']:.2f} → {ubd['total_pay']:.2f} ₴) — OK")
 
 def _selftest_panel():
     """Сторож вибору панелей: модель і кількість від менеджера сильніші за автопідбір."""
@@ -1253,6 +1314,8 @@ if __name__ == "__main__":
         _selftest_mounting()
         _selftest_km()
         _selftest_no_mounting()
+        _selftest_ubd()
+        _selftest_zero_counts()
         _selftest_no_panels()
         _selftest_battery()
         _selftest_vendor()
