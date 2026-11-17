@@ -111,7 +111,23 @@
   table.cred td{border:1px solid #c9c9c9;padding:6px 5px;text-align:center;word-wrap:break-word}
   table.cred tr:first-child td{background:#8cc63f;color:#173a17;font-weight:bold;font-size:10px}
   table.cred td.b{font-weight:bold;font-size:12px}
-  .cred-bankname{font-weight:bold;font-size:12.5px;color:#173a17;margin:12px 0 3px}
+  .cred-bankname{font-weight:bold;font-size:15px;color:#173a17;margin:14px 0 5px}
+  /* Підблок програми в межах одного банку: відступ злева, щоб обидві програми читались
+     як частини блоку «Укрсиббанк», а не як два різні банки. */
+  .cred-prog{margin-left:10px;padding-left:10px;border-left:3px solid #8cc63f}
+  .cred-progname{font-weight:bold;font-size:11.5px;color:#173a17;margin:10px 0 2px}
+  /* Плашка блоку кредитування. До 17.11.2026 клас .kp-h не мав стилю зовсім, і заголовок
+     «Варіанти кредитування» друкувався дрібним текстом нарівні з підписами таблиць. */
+  .kp-h{background:#8cc63f;color:#173a17;font-weight:bold;font-size:13.5px;letter-spacing:1.2px;
+        text-align:center;padding:7px 10px;margin:18px 0 0;text-transform:uppercase}
+  .kp-h span{display:block;font-size:10.5px;font-weight:normal;letter-spacing:.4px;
+             text-transform:none;margin-top:2px;color:#2a4a1a}
+  .cred-intro{background:#f3f8f4;border-left:4px solid #8cc63f;padding:10px 14px;margin:0 0 4px;font-size:11.5px;line-height:1.5;color:#111}
+  .cred-intro p{margin:5px 0}
+  .cred-intro ul{margin:5px 0;padding-left:18px}
+  .cred-intro li{margin:3px 0}
+  .cred-terms{font-size:11px;line-height:1.45;color:#333;margin:4px 0 6px;padding-left:16px}
+  .cred-terms li{margin:2px 0}
   .kp-mini{font-size:10.5px;color:#666;margin-top:6px;text-align:center;font-style:italic}
   .kp-note{font-size:11px;font-weight:bold;margin-top:16px;line-height:1.5;color:#111}
   .kp-note .ast{color:#e8402a;font-weight:bold}
@@ -244,12 +260,14 @@
       <div class="step-h"><span class="n">5</span> Обʼєкт</div>
       <div id="mountFields">
         <div class="row">
-          <div><label>Поверховість</label>
+          <div id="floorsField"><label>Поверховість</label>
             <select id="floors"><option>1</option><option>2</option><option>3</option></select></div>
           <div><label>Км до обʼєкта (туди-назад)</label><input id="km" type="number" min="1" placeholder="обовʼязково"></div>
         </div>
-        <label>Покриття даху</label>
-        <select id="roof"></select>
+        <div id="roofField">
+          <label>Покриття даху</label>
+          <select id="roof"></select>
+        </div>
       </div>
     </div>
 
@@ -258,7 +276,7 @@
       <div id="consField"><label>Споживання клієнта, кВт/міс</label>
         <input id="consumption" type="number" value="500"></div>
       <div class="hint" id="consHint"></div>
-      <label class="opt"><input id="withUbd" type="checkbox"> Знижка УБД 3%</label>
+      <label class="opt"><input id="withUbd" type="checkbox" onchange="ubdPick(this)"> <span></span></label>
       <div class="hint">У КП покажемо і повну суму, і суму зі знижкою.</div>
     </div>
 
@@ -421,6 +439,10 @@ function syncForm(){
   sh("panelPick", f.hasPanels);
   sh("panelKwField", f.hasPanels && f.manual);
   sh("stepMount", f.mount);
+  // Без панелей монтаж — це тільки інвертор, АКБ і підключення: дах і поверховість
+  // не рахуються, тому й не питаються (рішення власника 10.11.2026).
+  sh("floorsField", f.hasPanels);
+  sh("roofField", f.hasPanels);
   if(!f.mount) document.getElementById("mountBlock").style.display = "none";
   sh("consField", f.needCons);
   [...document.querySelectorAll(".step")].filter(e => e.style.display !== "none")
@@ -485,9 +507,19 @@ function buildReq(){
   req.no_mounting=!f.mount;
   req.no_panels=!f.hasPanels;
   req.no_protection=!document.getElementById("withProt").checked;
-  req.ubd=document.getElementById("withUbd").checked;
+  req.ubd=chk("withUbd")?3:0;
   return req;
 }
+/* Підписи знижок живуть тут: той самий рядок стоїть і в галочці, і в підсумку КП, тому
+   5% не повинна ніде ловити слово «УБД» (рішення власника 12.11.2026).
+   Знижки виключають одна одну: рядок знижки в КП один, і сервер бере рівно один процент. */
+// Знижка одна — 3% УБД (5% прибрано на вимогу власника 17.11.2026). Підпис живе тут і звідси ж
+// йде в рядок КП: два написання однієї знижки вже розʼїжджались.
+const UBD_OPTS={withUbd:{pct:3,title:"Знижка УБД 3%"}};
+Object.entries(UBD_OPTS).forEach(([id,o])=>document.getElementById(id).nextElementSibling.textContent=o.title);
+const ubdTitle=pct=>Object.values(UBD_OPTS).find(o=>o.pct===pct)?.title||`Знижка ${pct}%`;
+const chk=id=>document.getElementById(id).checked;
+function ubdPick(el){ if(el.checked) Object.keys(UBD_OPTS).filter(i=>i!==el.id).forEach(i=>document.getElementById(i).checked=false); }
 async function generate(){
   document.getElementById("status").textContent="Підбір обладнання та розрахунок…";
   document.getElementById("warnBox").innerHTML="";
@@ -589,32 +621,69 @@ async function renderKP(req,d){
         <div class="mon">${d.monthly.map(x=>`<div>${x.m}</div>`).join("")}</div>
       </div>`:"";
   const co=d.credit&&d.credit.oschad, cu=d.credit&&d.credit.ukrsib;
+  // Вступ до кредитування: клієнт має зрозуміти різницю банків до того, як дійде до цифр.
+  // Живе одним блоком із таблицею Ощадбанку — окремо він не має сенсу.
   const creditO=co?`
-      <div class="kp-h">Варіанти кредитування</div>
+      <div class="kp-h">Фінансування станції<span>кредитні програми банків-партнерів</span></div>
+      <div class="cred-intro">
+        <p>Ми є прямим партнером Ощадбанку та Укрсиббанку. Основні умови — нижче, повні розрахунки за вашою станцією — у таблицях.</p>
+        <ul>
+          <li><b>Ощадбанк</b> — державна програма. Компенсація ${co.comp_pct}% від вартості зі строком кредитування до 10 років та без першого внеску. Перелік вимог до позичальника та обʼєкта розширений.</li>
+          <li><b>Укрсиббанк</b> — розтермінування діє по 2 програмам: Green та ЄБРР. Перший внесок 10%, безпроцентний період 9 або 12 місяців. Також доступна компенсація ${cu?cu.ebrd.comp_pct:15}% від суми кредиту. Основна вимога — наявність достатнього доходу.</li>
+        </ul>
+        <p>Ощадбанк дешевший за рахунок державної компенсації, але вимагає відповідності всім умовам програми. Укрсиббанк дорожчий, рішення ухвалюється швидше і залежить від доходу: у межах безпроцентного періоду вартість кредиту — 0%.</p>
+      </div>
       <div class="cred-bankname">Ощадбанк — Держпрограма «Енергонезалежність домогосподарств»</div>
       <table class="cred-glob">
         <tr><td>Сума кредита</td><td class="v">${money(co.price)}</td></tr>
-        <tr><td>Компенсація держави 25%</td><td class="v v-green">${money(co.compensation)}</td></tr>
+        <tr><td>Компенсація держави ${co.comp_pct}%</td><td class="v v-green">${money(co.compensation)}</td></tr>
         <tr><td>Сума кредита до сплати</td><td class="v">${money(co.principal)}</td></tr>
       </table>
       <table class="cred">
-        <tr><td>Строк погашення</td><td>Щомісячний платіж</td><td>Сума виплати кредита</td><td>Економія на покупці СЕС</td><td>Економія на е/е за строк</td></tr>
-        ${co.rows.map(r=>`<tr><td class="b">${r.term}</td><td class="b">${money(r.monthly)}</td><td class="b">${money(r.total)}</td><td class="b v-green">${money(r.benefit)}</td><td class="b v-green">${money(r.elec)}</td></tr>`).join("")}
+        <tr><td>Строк погашення</td><td>Щомісячний платіж</td><td>Сума виплати кредита</td><td>Переплата</td><td>Економія на е/е за строк</td></tr>
+        ${co.rows.map(r=>`<tr><td class="b">${r.term}</td><td class="b">${money(r.monthly)}</td><td class="b">${money(r.total)}</td><td class="b ${r.overpay>0?'v-red':''}">${money(r.overpay)}</td><td class="b v-green">${money(r.elec)}</td></tr>`).join("")}
       </table>`:"";
-  const creditU=cu?`
-      <div class="cred-bankname" style="margin-top:0">Укрсиббанк — Кредит від ЄБРР (перший внесок ${cu.first_pct}%)</div>
+  // Підблок однієї програми Укрсиббанку. Рядок «Компенсація» друкується лише там, де вона є:
+  // у Green компенсації немає зовсім, і рядок у нуль клієнт читає як скасовану пільгу.
+  const uProg=(u,name,bullets)=>`
+      <div class="cred-prog">
+      <div class="cred-progname">${name}</div>
+      <ul class="cred-terms">${bullets.map(t=>`<li>${t}</li>`).join("")}</ul>
       <table class="cred-glob">
-        <tr><td>Вартість станції</td><td class="v">${money(cu.price)}</td></tr>
-        <tr><td>Перший внесок ${cu.first_pct}%</td><td class="v">${money(cu.first)}</td></tr>
-        <tr><td>Сума кредиту</td><td class="v">${money(cu.body)}</td></tr>
-        <tr><td>Компенсація банку ${cu.comp_pct}%</td><td class="v v-green">${money(cu.compensation)}</td></tr>
-        <tr><td>Сума кредиту до погашення</td><td class="v">${money(cu.debt)}</td></tr>
+        <tr><td>Вартість станції</td><td class="v">${money(u.price)}</td></tr>
+        <tr><td>Перший внесок${u.capped?"":" "+u.first_pct+"%"}</td><td class="v">${money(u.first)}</td></tr>
+        <tr><td>Сума кредиту</td><td class="v">${money(u.body)}</td></tr>
+        ${u.comp_pct?`<tr><td>Компенсація банку ${u.comp_pct}%</td><td class="v v-green">${money(u.compensation)}</td></tr>
+        <tr><td>Сума кредиту до погашення</td><td class="v">${money(u.debt)}</td></tr>`:""}
       </table>
       <table class="cred">
         <tr><td>Строк погашення</td><td>Щомісячний платіж</td><td>Сума виплати кредита</td><td>Переплата</td><td>Економія на е/е за строк</td></tr>
-        ${cu.rows.map(r=>`<tr><td class="b">${r.term}</td><td class="b">${money(r.monthly)}</td><td class="b">${money(r.total)}</td><td class="b ${r.overpay>0?'v-red':''}">${money(r.overpay)}</td><td class="b v-green">${money(r.elec)}</td></tr>`).join("")}
+        ${u.rows.map(r=>`<tr><td class="b">${r.term}</td><td class="b">${money(r.monthly)}</td><td class="b">${money(r.total)}</td><td class="b ${r.overpay>r.sms?'v-red':''}">${money(r.overpay)}</td><td class="b v-green">${money(r.elec)}</td></tr>`).join("")}
       </table>
-      <div class="kp-mini">Ощадбанк — до 10 років з держкомпенсацією 25%; Укрсиббанк — перший внесок ${cu.first_pct}% і компенсація банку ${cu.comp_pct}% від суми кредиту; 9 і 12 міс — безпроцентно (грейс), 15 міс і 2 роки — з щомісячною комісією 3,5% на залишок після грейсу.</div>`:"";
+      ${u.cap_note?`<div class="kp-mini" style="text-align:left;margin-top:4px">${u.cap_note}</div>`:""}
+      </div>`;
+  // Спільні умови обох програм — один масив: два переписаних від руки списки розʼїжджались
+  // би на першій же зміні умов банку.
+  const uCommon=u=>[
+    `<b>Перший внесок</b> — ${u.capped?money(u.first):u.first_pct+"% вартості станції"}.`,
+    "<b>0% за кредитом</b>, поки ви вкладаєтесь у строк, на який його взяли: 9 або 12 місяців.",
+    // У Green база комісії = вся сума кредиту, у ЄБРР компенсація її зменшує — формулювання
+    // йде за розрахунком, інакше клієнт перевірить множенням і не зійдеться.
+    `<b>Виходите за цей строк</b> — починаючи з 10-го місяця або з 13-го, нараховується щомісячна комісія <b>3,5%</b> ${u.comp_pct?"від суми кредиту після компенсації":"від повної суми кредиту"}.`,
+    `<b>Мінімальна сума кредиту</b> за програмою — ${money(u.min_sum)}.`,
+    "Погашення рівними частинами, достроково закрити кредит можна будь-коли.",
+  ];
+  // Два підблоки — два окремі елементи масиву сторінок: якщо друга таблиця на сторінку вже не
+  // влазить, вона їде на наступну сама, а не тягне за собою першу (рішення власника 17.11.2026).
+  const creditG=cu?`${uProg(cu.green,"Програма Green — розтермінування",
+              [...uCommon(cu.green),
+               "Компенсації за цією програмою немає — ви сплачуєте рівно суму кредиту плюс комісію за місяці поза безпроцентним періодом."])}`:"";
+  // Перший внесок — першим пунктом в обох програмах: різний порядок читався як різні умови.
+  const creditE=cu?(b=>`<div class="cred-bankname" style="margin-top:0">Укрсиббанк — дві програми розтермінування</div>`
+            +uProg(cu.ebrd,`Програма ЄБРР — розтермінування з компенсацією ${cu.ebrd.comp_pct}%`,
+              [b[0],
+               `<b>Компенсація банку ${cu.ebrd.comp_pct}%</b> від суми кредиту гасить частину тіла одразу: і щомісячний платіж, і комісія рахуються вже від зменшеної суми.`,
+               ...b.slice(1)]))(uCommon(cu.ebrd)):"";
   const ADV=[
     ['<svg viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2"/><circle cx="12" cy="12" r="2.6"/><path d="M5.5 9v6M18.5 9v6"/></svg>',
      "Точний кошторис", "формується після виїзду технічного спеціаліста на обʼєкт та проведення замірів."],
@@ -660,7 +729,7 @@ async function renderKP(req,d){
        <tbody>${rows}</tbody>
      </table>
      ${d.discount ? `<div class="kp-topay">Загальна сума: ${money(d.total)}</div>
-     <div class="kp-topay">Знижка УБД ${d.discount_pct}%: −${money(d.discount)}</div>
+     <div class="kp-topay">${ubdTitle(d.discount_pct)}: −${money(d.discount)}</div>
      <div class="kp-topay">До сплати: ${money(d.total_pay)}</div>
      <div class="kp-words">(${wordsUAH(d.total_pay)})</div>`
      : `<div class="kp-topay">До сплати: ${money(d.total)}</div>
@@ -673,7 +742,8 @@ async function renderKP(req,d){
        <tr><td>Ціна електроенергії прогнозована (з січня 2027)</td><td class="v v-red">${dec(e.price_forecast)} ₴</td></tr>
      </table>`,
     creditO,
-    creditU,
+    creditE,
+    creditG,
     noMount
     ? `<div class="kp-note">
        <span class="ast">*</span> Вартість обладнання зафіксована на момент формування комерційної пропозиції та є актуальною протягом 10 календарних днів. Після цього терміну ціни можуть бути змінені.<br>

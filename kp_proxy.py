@@ -172,19 +172,28 @@ OSCHAD_YEAR_RATES   = [0.0, 0.05, 0.07]  # ставка для клієнта: �
 UIRD_3M             = 0.21              # роки 4+: ставка = UIRD 3M + 7%
 OSCHAD_TERMS_MONTHS = [12, 36, 60]     # рахуємо 1 / 3 / 5 років
 
-# Кредит — УКРСИББАНК (ЄБРР): перший внесок 15%, грейс безпроцентний, після грейсу — щомісячна комісія
-# Компенсація банку діє знову (програма активована 20.10.2026) — платежі рахуються від тіла
-# МІНУС компенсація. Схема цілком — «Джерела даних та ціни.md», п. 6.
-UKRSIB_FIRST        = 0.15             # перший внесок від вартості станції
-UKRSIB_COMPENSATION = 0.15             # компенсація банку від тіла кредиту, гасить тіло одразу
-UKRSIB_MONTHLY_COMM = 0.035            # щомісячна комісія 3.5% на залишок ПІСЛЯ грейсу
+# Кредит — УКРСИББАНК. Дві програми (умови банку від 15.11.2026): Green — звичайна розстрочка,
+# ЄБРР — розстрочка з компенсацією. Схема цілком — «Джерела даних та ціни.md», п. 6.
+UKRSIB_FIRST        = 0.10             # перший внесок: банк радить 5-10%, у КП — верх вилки
+UKRSIB_COMPENSATION = 0.15             # ЄБРР: компенсація 15-25% від тіла, у КП — низ вилки
+# Комісія 3.5% нараховується на ВСЮ суму до погашення за кожен місяць після грейсу, а не на
+# залишок (умова банку виділена менеджером окремо). На залишку 2 роки давали ≈11% тіла, на сумі — 42%.
+UKRSIB_MONTHLY_COMM = 0.035
+# 50 ₴/міс — плата за SMS-інформування, у грейс це вся переплата клієнта. У тексті КП слово
+# «SMS» не друкується (рішення власника 17.11.2026): клієнт читає його як окрему послугу.
+UKRSIB_SMS          = 50
 UKRSIB_TERMS        = [(9, 9), (12, 12), (15, 12), (24, 12)]  # (термін_міс, грейс_міс)
+# Межі суми кредиту по програмах (рішення власника 17.11.2026). У вигрузці банку в Green є і
+# продукт 0_9 від 5 000 ₴, але в КП ставимо 300 000 ₴ — власник підтвердив саме цю межу.
+UKRSIB_LIMITS       = {"green": (300000, 500000), "ebrd": (200000, 500000)}
 
 # Захисна автоматика — позиция «до 15 кВт» = 281$ (согласовано)
 PROTECTION_USD = 281.0
-# Знижка УБД (учасник бойових дій) — 3% на весь кошторис, рішення власника 30.10.2026.
+# Знижки на весь кошторис: 3% — УБД (учасник бойових дій), 5% — звичайна, без привʼязки до УБД
+# (рішення власника 30.10.2026 і 12.11.2026). Підписи рядків — у UBD_OPTS у kp_generator.html.
 # Ціни позицій знижка не чіпає: їх же переносять у CRM, і там рядок має збігатися з каталогом.
-UBD_DISCOUNT = 0.03
+# Білий список, а не процент із запиту: інакше підробленим ubd можна виписати будь-яку знижку.
+UBD_DISCOUNTS = {3: 0.03}
 # ID товаров в каталоге CRM для привязки позиций к блоку «Товари» сделки
 PROTECTION_ID = 8201228   # Захисна автоматика 281$
 VYTRATNI_ID   = 8201225   # Витратні матеріали (кабель, гофра, короб, стяжки, кріпильні)
@@ -559,11 +568,17 @@ def inverter_options(cat):
 def round10(x):
     return int(round(x / 10.0) * 10)
 
-def roof_mount(roof):
-    """Тип монтажу для назви позиції КП («на похилий дах» / «на плаский дах» / «наземна станція»)."""
+def roof_mount(roof, no_panels=False):
+    """Тип монтажу для назви позиції КП («на похилий дах» / «на плаский дах» / «наземна станція»).
+    Без панелей даху в монтажі немає: ставимо й підключаємо тільки інвертор з АКБ."""
+    if no_panels:
+        return "інвертор та АКБ"
     return next((o["mount"] for o in ROOF_OPTIONS if o["key"] == roof), "на похилий дах")
 
-def mounting_rows(n_panels, n_batt, roof, floors, km, override=None, n_inv=1):
+# Рядки монтажу, які існують тільки через панелі на даху: без панелей їх у кошторисі немає зовсім.
+ROOFLESS_SKIP = {"m_panel", "c_panel", "m_floor", "c_vyshka"}
+
+def mounting_rows(n_panels, n_batt, roof, floors, km, override=None, n_inv=1, no_panels=False):
     """Детальный монтаж-калькулятор → (rows, totals).
     rows: [{block, key, label, price, qty, sum}] — для прозрачного показа и правки.
     override = {key: qty} — ручные корректировки количеств менеджером.
@@ -589,6 +604,10 @@ def mounting_rows(n_panels, n_batt, roof, floors, km, override=None, n_inv=1):
     ]
     rows = []
     for block, key, label, price, default_qty in spec:
+        # ДБЖ без панелей (рішення власника 10.11.2026): покрівельні рядки не просто стають у нуль,
+        # а зникають — менеджер не має правити в калькуляторі дах, якого в кошторисі не буде.
+        if no_panels and key in ROOFLESS_SKIP:
+            continue
         q = qty(key, default_qty)
         rows.append({"block": block, "key": key, "label": label,
                      "price": price, "qty": q, "sum": round(price * q, 2)})
@@ -622,8 +641,10 @@ def _term_label(months):
 
 def oschad_credit(price, monthly_econ=0):
     """Кредит Ощадбанк: компенсація тіла 25%, ставка клієнта 0/5/7%/UIRD+7% по годах,
-    рівними частинами. Колонки: щомісячний платіж, сума виплати, економія на покупці
-    (= Компенсація − Переплата), економія на е/е за строк (= споживання×прогноз×міс)."""
+    рівними частинами. Колонки: щомісячний платіж, сума виплати, переплата за процентами
+    (`overpay`), економія на е/е за строк (= споживання×прогноз×міс). `benefit` (= компенсація
+    − переплата) лишається в даних: у КП його з 18.11.2026 не друкуємо, але число потрібне
+    менеджеру на перемовинах."""
     comp = price * OSCHAD_COMPENSATION
     P = price - comp                       # тіло кредиту, що сплачує клієнт (75%)
     rows = []
@@ -637,37 +658,60 @@ def oschad_credit(price, monthly_econ=0):
         total = P + interest
         rows.append({"term": _term_label(M), "monthly": round(total / M),
                      "total": round(total), "benefit": round(comp - interest),
-                     "elec": round(monthly_econ * M)})
+                     "overpay": round(interest), "elec": round(monthly_econ * M)})
+    # comp_pct і year_rates їдуть у фронт, щоб вступний текст КП не переписував ці ж числа
+    # руками: дубль у двох файлах розʼїхався б на першій зміні умов програми.
     return {"price": round(price), "compensation": round(comp),
+            "comp_pct": int(OSCHAD_COMPENSATION * 100),
+            "year_rates": [int(r * 100) for r in OSCHAD_YEAR_RATES],
             "principal": round(P), "rows": rows}
 
 def _months_label(m):
     return {9: "9 місяців", 12: "12 місяців", 15: "15 місяців", 24: "2 роки"}.get(m, f"{m} міс")
 
-def ukrsib_credit(price, monthly_econ=0):
-    """Кредит Укрсиббанк (ЄБРР). Схема (програма з компенсацією, активована 20.10.2026):
-      перший внесок 15% від вартості → тіло = 85% → компенсація банку 15% від тіла гасить
-      його одразу → сума до погашення = тіло − компенсація, і платежі рахуються ТІЛЬКИ на неї.
-    Погашення рівними частинами; у грейс комісії немає, після грейсу — щомісячна комісія
-    3.5% на залишок. Разова комісія банку 1% не враховується (рішення 09.08.2026)."""
+def _uah(n):
+    """Сума з пробілом у розрядах. Окремою функцією, бо `f"...".replace(",", " ")` на всій
+    фразі з'їдав і коми самого тексту."""
+    return f"{n:,}".replace(",", " ")
+
+def ukrsib_credit(price, monthly_econ=0, program="green"):
+    """Кредит Укрсиббанк, одна з двох програм (умови банку 15.11.2026):
+      green — звичайна розстрочка, компенсації немає;
+      ebrd  — розстрочка з компенсацією банку (UKRSIB_COMPENSATION від тіла, гасить тіло одразу).
+    Перший внесок 10% від вартості → тіло = сума кредиту → сума до погашення = тіло − компенсація,
+    і платежі рахуються ТІЛЬКИ на неї, рівними частинами.
+    Переплата: 50 ₴/міс за весь строк + після грейсу щомісячна комісія 3.5% на СУМУ ДО ПОГАШЕННЯ,
+    не на залишок. У ЄБРР база комісії — вже зменшена компенсацією сума (рішення власника
+    17.11.2026: на повному тілі переплата обох програм виходила однакова, і компенсація в
+    таблиці зникала). Разова комісія банку (1.99% у ЄБРР) не враховується — рішення 09.08.2026."""
+    comp_rate = UKRSIB_COMPENSATION if program == "ebrd" else 0.0
+    lo, hi = UKRSIB_LIMITS[program]
     first = price * UKRSIB_FIRST
     body = price - first
-    comp = body * UKRSIB_COMPENSATION
+    # Більше hi банк у кредит не дає: різницю клієнт докладає в перший внесок (рішення власника
+    # 17.11.2026). Відсотка в підписі внеску тоді немає — 48,2% від вартості в рядок не влізе
+    # без розходження з гривневою сумою, а правда тут саме сума.
+    capped = body > hi
+    if capped:
+        body = float(hi)
+        first = price - body
+    comp = body * comp_rate
     debt = body - comp
     rows = []
     for M, grace in UKRSIB_TERMS:
-        comm = 0.0
-        for k in range(grace + 1, M + 1):
-            bal = debt - (k - 1) * debt / M       # залишок на початок місяця
-            comm += bal * UKRSIB_MONTHLY_COMM
+        comm = max(0, M - grace) * debt * UKRSIB_MONTHLY_COMM + M * UKRSIB_SMS
         total = debt + comm
         rows.append({"term": _months_label(M), "monthly": round(total / M),
                      "total": round(total), "overpay": round(comm),
-                     "elec": round(monthly_econ * M)})
-    return {"price": round(price), "first": round(first),
-            "first_pct": int(UKRSIB_FIRST * 100), "body": round(body),
-            "compensation": round(comp), "comp_pct": int(UKRSIB_COMPENSATION * 100),
-            "debt": round(debt), "rows": rows}
+                     "sms": M * UKRSIB_SMS, "elec": round(monthly_econ * M)})
+    return {"program": program, "price": round(price), "first": round(first),
+            "first_pct": int(UKRSIB_FIRST * 100), "capped": capped, "body": round(body),
+            "compensation": round(comp), "comp_pct": int(comp_rate * 100),
+            "debt": round(debt), "rows": rows, "min_sum": lo, "max_sum": hi,
+            # Нижня межа програми друкується в КП рядком умов, але розрахунок під неї не
+            # ховається: КП з таблицями показують у будь-якому разі (рішення власника 17.11.2026).
+            "cap_note": f"Максимальна сума кредиту за програмою — {_uah(hi)} ₴, решта вартості "
+                        f"сплачується першим внеском." if capped else ""}
 
 def protection_usd(has_panels):
     """Ціна захисної автоматики. Повна — коли в КП і панелі, і обладнання: щит там захищає
@@ -779,7 +823,8 @@ def build_preview(req):
     else:
         mrows, mtot = mounting_rows(n_panels, batt_count, req.get("roof", "metal"),
                                     int(req.get("floors") or 1), _num(req.get("km")) or 0,
-                                    req.get("mounting_override"), n_inv=inv_count)
+                                    req.get("mounting_override"), n_inv=inv_count,
+                                    no_panels=no_panels)
     equip = []
     if inv:
         equip.append({"title": inv["title"], "unit": "шт", "qty": inv_count,
@@ -791,7 +836,7 @@ def build_preview(req):
     if panel:
         equip.append({"title": panel["title"], "unit": "шт", "qty": n_panels,
                       "price": panel["uah"], "product_id": panel["id"]})
-    lines = kp_lines(equip, prot_uah, mtot, roof_mount(req.get("roof", "metal")),
+    lines = kp_lines(equip, prot_uah, mtot, roof_mount(req.get("roof", "metal"), no_panels),
                      no_mounting, no_protection)
     # точное название товара из каталога (для привязки позиции к «Товари» без мутации каталога)
     prods_by_id = {p["id"]: p for p in fetch_products()}
@@ -800,9 +845,10 @@ def build_preview(req):
         p = prods_by_id.get(ln.get("product_id"))
         ln["product_title"] = p["title"] if p else ln["title"]
     total = round(sum(ln["sum"] for ln in lines), 2)
-    # Знижка УБД окремим рядком, а не правкою цін: клієнт має бачити обидві суми,
+    # Знижка окремим рядком, а не правкою цін: клієнт має бачити обидві суми,
     # а в CRM позиції їдуть за каталожною ціною. Кредит рахується від суми до сплати.
-    discount = round(total * UBD_DISCOUNT, 2) if req.get("ubd") else 0.0
+    ubd_pct = int(_num(req.get("ubd")) or 0)
+    discount = round(total * UBD_DISCOUNTS.get(ubd_pct, 0.0), 2)
     total_pay = round(total - discount, 2)
 
     # 5) блок «Вигоди» + помесячная генерация (для графика)
@@ -814,13 +860,14 @@ def build_preview(req):
     return {
         "ok": True, "warnings": warnings, "no_mounting": no_mounting, "no_panels": no_panels,
         "tech": tech, "lines": lines, "total": total, "economy": econ,
-        "discount": discount, "discount_pct": round(UBD_DISCOUNT * 100), "total_pay": total_pay,
+        "discount": discount, "discount_pct": ubd_pct if discount else 0, "total_pay": total_pay,
         "monthly": monthly, "mounting": mrows, "mounting_totals": mtot,
         # У КП на ДБЖ кредитних таблиць немає зовсім: обидві рахують економію на е/е, якої
         # без панелей не буває, а держкомпенсація Ощадбанку дається лише на гібридну СЕС.
         "credit": {} if no_panels else {
             "oschad": oschad_credit(total_pay, econ_month),
-            "ukrsib": ukrsib_credit(total_pay, econ_month)},
+            "ukrsib": {"green": ukrsib_credit(total_pay, econ_month, "green"),
+                       "ebrd":  ukrsib_credit(total_pay, econ_month, "ebrd")}},
         "meta": {"manager": req.get("manager"), "manager_phone": req.get("manager_phone"),
                  "client_name": req.get("client_name"), "client_phone": req.get("client_phone"),
                  "client_city": req.get("client_city"), "number": req.get("number"),
@@ -930,6 +977,27 @@ def _selftest_mounting():
     assert q["m_panel"] == 10 and q["c_panel"] == 10, q
     print("mounting_rows (кількості) — OK")
 
+def _selftest_mounting_no_panels():
+    """Сторож монтажу ДБЖ: без панелей платять лише за інвертор, АКБ та виїзд бригади.
+    Покрівельні рядки (панелі, висотність, вишка) не мають лишатись навіть у нуль —
+    інакше в КП їде «монтаж на похилий дах», якого там немає."""
+    rows, tot = mounting_rows(0, 2, "metal", 3, 600, n_inv=1, no_panels=True)
+    keys = [r["key"] for r in rows]
+    assert not (set(keys) & ROOFLESS_SKIP), keys
+    assert set(keys) == {"m_inv", "m_batt", "c_inv", "c_batt", "d_deliv", "d_road", "d_diem"}, keys
+    R = rates()
+    assert tot["D12"] == R["inverter_install"] + R["battery_install"] * 2, tot
+    assert tot["vytratni"] == round10(R["inverter_consum"] + R["battery_consum"] * 2), tot
+    # висотність навіть на третьому поверсі не додається: вона за крутий дах, а даху тут немає
+    assert not any(r["key"] == "m_floor" for r in rows), rows
+    # з панелями ті самі рядки на місці, інакше сторож ловив би не те
+    full, ftot = mounting_rows(10, 2, "metal", 3, 600, n_inv=1)
+    assert ROOFLESS_SKIP <= {r["key"] for r in full}, full
+    assert ftot["D12"] > tot["D12"], (ftot, tot)
+    assert roof_mount("metal", True) == "інвертор та АКБ", roof_mount("metal", True)
+    assert roof_mount("metal") == "на похилий дах"
+    print("mounting_rows (монтаж ДБЖ без панелей) — OK")
+
 def _selftest_km():
     """Сторож обовʼязкових км: без відстані КП не збирається (доставка порахувалась би в нуль)."""
     for bad in ({}, {"km": ""}, {"km": 0}, {"km": "-5"}):
@@ -967,7 +1035,7 @@ def _selftest_no_panels():
     full = build_preview({"mode": "station", "station": STATIONS[0]["name"],
                           "consumption": 500, "no_mounting": True})
     assert any("панел" in l["title"].lower() for l in full["lines"]), full["lines"]
-    assert full["credit"]["oschad"] and full["credit"]["ukrsib"], full["credit"]
+    assert full["credit"]["oschad"] and full["credit"]["ukrsib"]["ebrd"], full["credit"]
     print("build_preview (ДБЖ без панелей) — OK")
 
 def _selftest_battery():
@@ -1025,18 +1093,40 @@ def _selftest_economy():
     print("calc_economy (перевиробництво) — OK")
 
 def _selftest_ukrsib():
-    """Сторож компенсації: платежі мають рахуватись від тіла МІНУС компенсація 15%.
-    Якщо базу компенсації змінити (напр. взяти 15% від вартості, а не від тіла) або
-    порахувати платежі на повне тіло — числа нижче розійдуться."""
-    r = ukrsib_credit(400000)
-    assert r["first"] == 60000 and r["body"] == 340000, r
-    assert r["compensation"] == 51000 and r["debt"] == 289000, r
-    # безпроцентні строки (грейс = строк): виплата = рівно сума до погашення
-    assert r["rows"][0]["total"] == 289000 and r["rows"][1]["total"] == 289000, r["rows"][:2]
-    assert r["rows"][0]["monthly"] == 32111, r["rows"][0]
-    # 2 роки, грейс 12: комісія 3.5% на залишок за місяці 13..24
-    assert r["rows"][3]["overpay"] == 32874, r["rows"][3]
-    print("ukrsib_credit (з компенсацією 15% тіла) — OK")
+    """Сторож двох програм Укрсиббанку. Ловить чотири помилки, кожну з яких вже робили:
+    базу компенсації (15% від тіла, а не від вартості), базу комісії (3.5% на суму до погашення,
+    а не на залишок), плату 50 ₴/міс (у грейс це вся переплата) і головне — компенсація ЄБРР
+    мусить зменшувати комісію: на повному тілі переплата обох програм виходила однакова."""
+    e = ukrsib_credit(400000, program="ebrd")
+    assert e["first"] == 40000 and e["body"] == 360000, e
+    assert e["compensation"] == 54000 and e["debt"] == 306000, e
+    # грейс = строк: переплата = тільки SMS за ці місяці
+    assert e["rows"][0]["overpay"] == 450 and e["rows"][0]["total"] == 306450, e["rows"][0]
+    assert e["rows"][0]["monthly"] == 34050, e["rows"][0]
+    # 2 роки, грейс 12: 12 міс × 3.5% від 306 000 (суми до погашення) + 24 × 50 ₴
+    assert e["rows"][3]["overpay"] == 129720, e["rows"][3]
+    g = ukrsib_credit(400000, program="green")
+    assert g["compensation"] == 0 and g["debt"] == 360000, g
+    assert g["rows"][3]["overpay"] == 152400, g["rows"][3]
+    # Компенсація мусить бити і по комісії, а не лише по тілу: інакше переплата обох програм
+    # однакова, і з таблиці ЄБРР зникає сенс компенсації.
+    assert e["rows"][3]["overpay"] < g["rows"][3]["overpay"], (e["rows"][3], g["rows"][3])
+    assert g["rows"][0]["total"] == 360450, g["rows"][0]
+    # Нижні межі друкуються в умовах і в програмах різні. Розрахунок під них не ховається:
+    # навіть на кредиті, меншому за мінімум, таблиця лишається повна.
+    assert (g["min_sum"], e["min_sum"]) == (300000, 200000), (g["min_sum"], e["min_sum"])
+    tiny = ukrsib_credit(100000, program="green")
+    assert len(tiny["rows"]) == len(UKRSIB_TERMS) and tiny["rows"][0]["monthly"] > 0, tiny
+    # Понад 500 000 ₴ кредиту банк не дає: тіло ріжеться по межі, різниця йде в перший внесок,
+    # вартість станції від цього не змінюється. Якщо обрізку прибрати — тіло поїде за межу.
+    big = ukrsib_credit(900000, program="ebrd")
+    assert big["capped"] and big["body"] == 500000, big
+    assert big["first"] == 400000 and big["first"] + big["body"] == big["price"], big
+    assert big["compensation"] == 75000 and big["debt"] == 425000, big
+    assert big["cap_note"], big
+    # 12 міс × 3.5% від 425 000 (обрізане тіло мінус компенсація) + 24 × 50 ₴
+    assert big["rows"][3]["overpay"] == 179700, big["rows"][3]
+    print("ukrsib_credit (Green і ЄБРР, комісія на суму до погашення) — OK")
 
 def _selftest_protection():
     """Сторож половинного щита: у ДБЖ (без панелей) автоматика коштує рівно половину."""
@@ -1081,18 +1171,29 @@ def _selftest_zero_counts():
     print("нульова кількість (інвертор / АКБ / панелі окремо) — OK")
 
 def _selftest_ubd():
-    """Сторож знижки УБД: ціни позицій лишаються повними, знижка доїжджає до суми й кредиту."""
+    """Сторож знижок: ціни позицій лишаються повними, знижка доїжджає до суми й кредиту."""
     base = {"mode": "station", "station": STATIONS[0]["name"], "consumption": 500}
     plain = build_preview({**base, "km": 100})
-    ubd   = build_preview({**base, "km": 100, "ubd": True})
     assert plain["discount"] == 0 and plain["total_pay"] == plain["total"], plain["discount"]
-    assert ubd["total"] == plain["total"], (ubd["total"], plain["total"])
-    assert abs(ubd["discount"] - plain["total"] * UBD_DISCOUNT) < 0.01, ubd["discount"]
-    assert ubd["total_pay"] == round(plain["total"] - ubd["discount"], 2), ubd["total_pay"]
-    # Знижка має дійти до кредитних таблиць, а не лишитись у підсумку КП.
-    assert ubd["credit"]["oschad"]["price"] == round(ubd["total_pay"]), ubd["credit"]["oschad"]["price"]
-    assert ubd["credit"]["ukrsib"]["price"] == round(ubd["total_pay"]), ubd["credit"]["ukrsib"]["price"]
-    print(f"знижка УБД ({ubd['discount_pct']}%: {plain['total']:.2f} → {ubd['total_pay']:.2f} ₴) — OK")
+    # Процент записаний тут цифрою, а не взятий з UBD_DISCOUNTS: інакше підміна в самому
+    # словнику проїхала б зеленою (перевірено мутацією).
+    for pct, share in ((3, 0.03),):
+        ubd = build_preview({**base, "km": 100, "ubd": pct})
+        assert ubd["total"] == plain["total"], (ubd["total"], plain["total"])
+        assert ubd["discount_pct"] == pct, ubd["discount_pct"]
+        assert abs(ubd["discount"] - plain["total"] * share) < 0.01, ubd["discount"]
+        assert ubd["total_pay"] == round(plain["total"] - ubd["discount"], 2), ubd["total_pay"]
+        # Знижка має дійти до кредитних таблиць, а не лишитись у підсумку КП.
+        assert ubd["credit"]["oschad"]["price"] == round(ubd["total_pay"]), ubd["credit"]["oschad"]["price"]
+        for prog in ("green", "ebrd"):
+            assert ubd["credit"]["ukrsib"][prog]["price"] == round(ubd["total_pay"]), ubd["credit"]["ukrsib"][prog]
+        print(f"знижка ({pct}%: {plain['total']:.2f} → {ubd['total_pay']:.2f} ₴) — OK")
+    # Процент не з білого списку знижки не дає: ubd приходить із браузера. 5% тут не випадково —
+    # знижку прибрали 17.11.2026, і стара галочка з чужої вкладки не має її повернути.
+    for bad in (5, 40):
+        bogus = build_preview({**base, "km": 100, "ubd": bad})
+        assert bogus["discount"] == 0 and bogus["discount_pct"] == 0, (bad, bogus["discount"])
+    print("чужий процент знижки (5% і 40%) — знижки немає — OK")
 
 def _selftest_panel():
     """Сторож вибору панелей: модель і кількість від менеджера сильніші за автопідбір."""
@@ -1312,6 +1413,7 @@ if __name__ == "__main__":
         _selftest_protection()
         _selftest_rates()
         _selftest_mounting()
+        _selftest_mounting_no_panels()
         _selftest_km()
         _selftest_no_mounting()
         _selftest_ubd()
