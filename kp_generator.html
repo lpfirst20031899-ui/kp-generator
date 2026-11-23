@@ -888,13 +888,19 @@ async function downloadPdf(){
 }
 async function pushToCrm(){
   if(!DEAL||!DEAL.id){ alert("Спочатку завантажте угоду (крок 2)."); return; }
-  if(!confirm(`Перенести ${PREVIEW.data.lines.length} позицій у угоду №${DEAL.id} (${DEAL.client_name})?\nЗагальна сума: ${money(PREVIEW.data.total)}`)) return;
+  const dsc=PREVIEW.data.discount||0;
+  if(!confirm(`Перенести ${PREVIEW.data.lines.length} позицій у угоду №${DEAL.id} (${DEAL.client_name})?\nЗагальна сума: ${money(PREVIEW.data.total)}`
+      +(dsc?`\n${ubdTitle(PREVIEW.data.discount_pct)}: −${money(dsc)}\nДо сплати: ${money(PREVIEW.data.total_pay)}`:""))) return;
   const btn=document.getElementById("btnPush"); btn.disabled=true; btn.textContent="Перенесення…";
   try{
     const r=await api("/api/push",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({deal_id:DEAL.id, lines:PREVIEW.data.lines, total:PREVIEW.data.total})});
+      // ubd — процент, а не сума: ціни позицій у CRM лишаються каталожними, знижку ставить
+      // сама CRM своїм полем (`discount`), і процент вона бере лише з білого списку на сервері.
+      body:JSON.stringify({deal_id:DEAL.id, lines:PREVIEW.data.lines, total:PREVIEW.data.total,
+                           ubd:PREVIEW.data.discount_pct||0})});
     if(r.ok){
-      document.getElementById("status").textContent=`✔ Перенесено ${r.added} позицій у угоду №${DEAL.id}. Сума угоди: ${money(parseFloat(String(r.deal_total).replace(/\s/g,'').replace(',','.'))||PREVIEW.data.total)}.`;
+      document.getElementById("status").textContent=`✔ Перенесено ${r.added} позицій у угоду №${DEAL.id}. Сума угоди: ${money(parseFloat(String(r.deal_total).replace(/\s/g,'').replace(',','.'))||PREVIEW.data.total)}.`
+        +(r.discount_pct?` Знижку ${r.discount_pct}% проставлено в угоді.`:"");
       btn.textContent=`✔ Перенесено (${r.added})`; return;
     } else { alert(r.error || "CRM не додала товари: невідома помилка"); }  // позиції могли створитись — текст помилки з проксі це і розрізняє
   }catch(e){ alert("Помилка: "+e.message); }

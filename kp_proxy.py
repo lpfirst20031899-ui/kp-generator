@@ -504,12 +504,13 @@ def pick_battery(cat, kwh):
 
 def choose_battery(cat, battery_id, kwh):
     """Модель АКБ для КП. Менеджер обирає конкретну (у наявності їх кілька з однаковою ємністю —
-    Deye, Sunwoda, без бренду), і його вибір сильніший за автопідбір. Якщо вибору немає або товар
-    уже зник з наявності — не падаємо, а беремо найближчу ємність (стара поведінка)."""
+    Deye, Sunwoda, MonaWall-SE5), і його вибір сильніший за автопідбір.
+    Обраний товар зник з наявності → None, а не найближча ємність: автопідбір бере найдешевшу,
+    і Deye 5,12 (50 140 ₴) молча перетворювався на MonaWall-SE5 (48 990 ₴) — клієнт отримував
+    у КП батарею іншого виробника, ніж обрав менеджер. Без вибору взагалі (стара збірка,
+    кешована сторінка) — автопідбір, але з попередженням у build_preview."""
     if battery_id:
-        hit = next((x for x in cat["batteries"] if x["id"] == int(battery_id)), None)
-        if hit:
-            return hit
+        return next((x for x in cat["batteries"] if x["id"] == int(battery_id)), None)
     return pick_battery(cat, kwh)
 
 def pick_panel(cat, target_kw):
@@ -788,9 +789,17 @@ def build_preview(req):
     inv = pick_inverter(cat, inv_kw, inv_phase) if inv_count else None
     if inv_count and not inv:
         warnings.append(f"Інвертор {inv_kw} кВт {inv_phase} — немає в наявності. Оберіть іншу конфігурацію.")
-    batt = choose_battery(cat, req.get("battery_id"), batt_kwh) if batt_count else None
+    batt_id = req.get("battery_id")
+    batt = choose_battery(cat, batt_id, batt_kwh) if batt_count else None
     if batt_count and not batt:
-        warnings.append(f"АКБ ~{batt_kwh} кВт·год — немає в наявності.")
+        warnings.append("Обрана модель АКБ зникла з наявності — оберіть іншу зі списку."
+                        if batt_id else f"АКБ ~{batt_kwh} кВт·год — немає в наявності.")
+    if batt and not batt_id:
+        # Без вибору моделі автопідбір бере найдешевшу з потрібною ємністю — це інший виробник,
+        # ніж менеджер звик бачити. Хай буде видно, яка саме батарея поїхала в КП.
+        warnings.append(f"Модель АКБ не вибрано — у КП стоїть "
+                        f"«{with_vendor(batt['title'], batt.get('vendor'))}» "
+                        f"(найдешевша з ємністю ~{batt_kwh} кВт·год).")
     if no_panels:
         panel, n_panels = None, 0
     else:
@@ -1046,7 +1055,8 @@ def _selftest_battery():
                          {"id": 3, "title": "Sunwoda 16",   "power": 16.0, "uah": 117650.0}]}
     assert choose_battery(cat, 2, 5.0)["id"] == 2, "вибір менеджера має бути сильнішим за ціну"
     assert choose_battery(cat, None, 5.0)["id"] == 1, "без вибору — найдешевша з найближчою ємністю"
-    assert choose_battery(cat, 999, 16.0)["id"] == 3, "зниклий товар — автопідбір, а не падіння"
+    assert choose_battery(cat, 999, 16.0) is None, \
+        "зниклий товар — не підміна найдешевшою (Deye → MonaWall-SE5), а відмова"
     assert [o["id"] for o in battery_options(cat)] == [1, 2, 3], "усі моделі, за зростанням ємності"
     print("choose_battery (вибір моделі АКБ) — OK")
 
@@ -1084,6 +1094,34 @@ def _selftest_push_match():
                      {"id": 3, "price_amount": 6018.25}, {"id": 4, "price_amount": 0}]}
     assert [ln["title"] for _, ln in _price_gaps(deal, pairs)] == ["Монтажні послуги"]
     print("push_match (порядок CRM ≠ порядок КП) — OK")
+
+def _selftest_push_discount():
+    """Сторож знижки в CRM: процент іде окремим полем угоди, ціни позицій лишаються каталожними,
+    чужий процент стає 0. Мережі не чіпає — `_api` підмінений на заглушку."""
+    global _api
+    real, sent = _api, []
+    def fake(path, method="GET", body=None):
+        if method == "PATCH":
+            sent.append(body); return {}
+        if not sent:                                  # перший GET — угода ще без позицій
+            return {"id": 1, "jobs": []}
+        return {"id": 1, "discount": sent[-1].get("discount", "0.0"),
+                "jobs": [{"id": 7, "title": "Інвертор", "product": {"id": 11},
+                          "price_amount": 60000}]}
+    _api = fake
+    try:
+        lines = [{"title": "Інвертор", "product_title": "Інвертор", "product_id": 11,
+                  "qty": 1, "price": 60000}]
+        for pct, want in ((3, "3.0"), (5, "0.0"), (0, "0.0")):
+            sent.clear()
+            r = push_jobs(1, lines, 60000, pct)
+            assert r["ok"], r
+            assert sent[-1]["discount"] == want, (pct, sent[-1].get("discount"))
+            assert sent[-1]["discount_kind"] == "percent_discount", sent[-1]
+            assert [j["price"] for j in sent[-1]["jobs_attributes"]] == ["60000.00"], sent[-1]
+    finally:
+        _api = real
+    print("push_discount (знижка полем угоди, 5% не проходить) — OK")
 
 def _selftest_economy():
     """Сторож обрізки: при перевиробництві «платити із СЕС» у КП = 0, а не відʼємна сума."""
@@ -1255,7 +1293,7 @@ def _price_gaps(deal, pairs):
     return [(j, ln) for j, ln in pairs
             if abs((now.get(j["id"], {}).get("price_amount") or 0) - float(ln["price"])) > 0.01]
 
-def push_jobs(deal_id, lines, total):
+def push_jobs(deal_id, lines, total, ubd_pct=0):
     """Записать позиции в блок «Товари» сделки. ДВУХШАГОВЫЙ процесс (проверено на CRM):
       Шаг 1 — создать позиции, привязанные к товарам каталога (product_attributes:{id,title});
               цену CRM берёт из каталога, а у «Витратних матеріалів» (8201225) и «Монтажних
@@ -1304,13 +1342,19 @@ def push_jobs(deal_id, lines, total):
                 "error": "Позиції створені, але їх не вдалося зіставити з рядками КП — "
                          "ціни не проставлено, перевірте угоду вручну."}
 
+    # Знижка їде власним полем угоди (`discount` + `discount_kind`), а не правкою цін позицій:
+    # ціни мусять збігатися з каталогом (див. UBD_DISCOUNTS). Процент — лише з білого списку,
+    # як і в превʼю, і коли знижки немає, пишемо 0: угода могла нести її з минулого КП.
+    pct = ubd_pct if ubd_pct in UBD_DISCOUNTS else 0
+    disc = {"discount": f"{pct}.0", "discount_kind": "percent_discount"}
+
     # Шаг 2 — проставить цены по id
     def _set_prices(ps):
         _api(f"/agreements/{deal_id}", method="PATCH",
              body={"jobs_attributes": [{"id": j["id"], "currency": "UAH",
                                         "price": f'{float(ln["price"]):.2f}'}
                                        for j, ln in ps],
-                   "products_total_as_total": True, "total": round(total, 2)})
+                   "products_total_as_total": True, "total": round(total, 2), **disc})
     try:
         _set_prices(pairs)
     except urllib.error.HTTPError as e:
@@ -1331,8 +1375,15 @@ def push_jobs(deal_id, lines, total):
                 "error": "Ціна не проставилась у рядках: "
                          + "; ".join(ln["title"] for _, ln in gaps)
                          + ". Проставте їх в угоді вручну."}
+    # Знижку перечитуємо: якщо CRM її не взяла, менеджер має побачити це тут, а не в угоді
+    # через тиждень — позиції вже створені, тому це не «ok».
+    if abs(float(d2.get("discount") or 0) - pct) > 0.01:
+        return {"ok": False, "added": len(new_jobs), "priced": len(pairs),
+                "error": f"Позиції та ціни перенесено, але знижку {pct}% CRM не прийняла "
+                         f"(в угоді {d2.get('discount')}) — поставте її в угоді вручну."}
     return {"ok": True, "added": len(new_jobs), "priced": len(pairs),
-            "jobs_total": len(d2.get("jobs") or []), "deal_total": d2.get("total")}
+            "jobs_total": len(d2.get("jobs") or []), "deal_total": d2.get("total"),
+            "discount_pct": pct}
 
 # ─────────────────────── HTTP ───────────────────────
 class H(BaseHTTPRequestHandler):
@@ -1398,7 +1449,8 @@ class H(BaseHTTPRequestHandler):
             if u.path == "/api/preview":
                 return self._send(build_preview(body))
             if u.path == "/api/push":
-                return self._send(push_jobs(body["deal_id"], body["lines"], body["total"]))
+                return self._send(push_jobs(body["deal_id"], body["lines"], body["total"],
+                                            int(_num(body.get("ubd")) or 0)))
         except Exception as e:
             return self._send({"error": str(e)}, 500)
         self._send({"error": "not found"}, 404)
@@ -1422,6 +1474,7 @@ if __name__ == "__main__":
         _selftest_battery()
         _selftest_vendor()
         _selftest_push_match()
+        _selftest_push_discount()
         _selftest_economy()
         sys.exit(0)
     import webbrowser, threading
